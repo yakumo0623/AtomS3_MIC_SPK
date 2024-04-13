@@ -17,7 +17,13 @@ const int udpPort = 3333;                 // 相手のポート
 WiFiUDP udp;
 WiFiServer server(4444);
 
+const size_t buffer_count = 200;
+const size_t buffer_size = 1024;
+uint8_t buffer[buffer_count][buffer_size] = {{0}};
+int idx = 0, idx2 = 0;
+
 unsigned long action_time = millis();
+TaskHandle_t play_task_handle = NULL;
 
 void log_memory_info(const char* text) {
   // DEFAULT
@@ -36,6 +42,16 @@ void log_memory_info(const char* text) {
   M5.Log.printf("%s DEFAULT: 総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, default_total_size, default_free_size, default_largest_free_block);
   M5.Log.printf("%s DMA:     総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, dma_total_size, dma_free_size, dma_largest_free_block);
   M5.Log.printf("%s SPIRAM:  総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, spiram_total_size, spiram_free_size, spiram_largest_free_block);
+}
+
+void play_task_loop(void *args) {
+  for (;;) {
+    if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && idx != idx2) {
+      M5.Speaker.playRaw((const int16_t*)buffer[idx2], buffer_size >> 1, 24000);
+      idx2 = (idx2 + 1) % buffer_count;
+  }
+    vTaskDelay(1);
+  }
 }
 
 void setup() {
@@ -86,15 +102,13 @@ void setup() {
     delay(500);
   }
 
+  // タスク実行
+  xTaskCreateUniversal(play_task_loop, "play_task_loop", 8192, NULL, 1, &play_task_handle, APP_CPU_NUM);
+
   // 送受信の初期化
   udp.begin(udpPort);
   server.begin();
 }
-
-const size_t buffer_count = 200;
-const size_t buffer_size = 1024;
-uint8_t buffer[buffer_count][buffer_size] = {{0}};
-int idx = 0, idx2 = 0;
 
 void loop() {
   M5.update();
@@ -139,10 +153,5 @@ void loop() {
         idx = (idx + 1) % buffer_count;
       }
     }
-  }
-
-  if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && idx != idx2) {
-    M5.Speaker.playRaw((const int16_t*)buffer[idx2], buffer_size >> 1, 24000);
-    idx2 = (idx2 + 1) % buffer_count;
   }
 }
