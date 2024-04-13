@@ -12,9 +12,10 @@ static int16_t *record_data;
 
 const char* ssid = "elecom2g-b09b64";     // WiFi SSID
 const char* password =  "xfxuwecedyfn";   // WiFi Password
-const char *udpAddress = "192.168.2.108"; // 相手のIPアドレス
+const char *udpAddress = "192.168.2.111"; // 相手のIPアドレス
 const int udpPort = 3333;                 // 相手のポート
 WiFiUDP udp;
+WiFiServer server(4444);
 
 unsigned long action_time = millis();
 
@@ -34,12 +35,17 @@ void setup() {
   M5.Mic.end();
 
   // スピーカーの初期化
+  // HAT-SPK2 {前面：5VI, 3V3, BAT, 0(LRCLK), 25(SDATA), 26(BCLK), 5VO, G}
+  // ATOM-MATE{         , 3V3,    , 19      , 33       , 22      , 5VO, G}
+  // ATOMS3   {         , 3V3,    ,  6      ,  8       ,  5      , 5V0, G}
   auto spk_cfg = M5.Speaker.config();
+  spk_cfg.sample_rate = 96000;
   spk_cfg.task_pinned_core = APP_CPU_NUM;
   spk_cfg.pin_bck = GPIO_NUM_5;       //SCK, BCLK, BCK
   spk_cfg.pin_ws = GPIO_NUM_6;        //WS, LRCLK, LRCK
   spk_cfg.pin_data_out = GPIO_NUM_8;  //SD, SDATA
   M5.Speaker.config(spk_cfg);
+  M5.Speaker.setVolume(125);
   M5.Speaker.end();
 
   // アバターの初期化
@@ -60,20 +66,36 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
   }
+
+  // UPD開始
   udp.begin(udpPort);
+  server.begin();
+
   M5.Mic.begin();
 }
+
+const size_t buffer_count = 200;
+const size_t buffer_size = 1024;
+uint8_t buffer[buffer_count][buffer_size] = {{0}};
+int idx = 0, idx2 = 0;
 
 void loop() {
   M5.update();
 
   if (M5.BtnA.wasPressed()) {
     action_time = millis();
+    if (M5.Speaker.isRunning()) {
+      M5.Speaker.end();
+      M5.Log.println("スピーカー：オフ（ボタンA押下）");
+    }
     M5.Mic.begin();
+    M5.Log.println("マイク：オン（ボタンA押下）");
+    idx = 0; idx2 = 0;
   }
 
-  if (M5.Mic.isRunning() && millis() - action_time >= 20000) {
+  if (M5.Mic.isRunning() && millis() - action_time >= 10000) {
     M5.Mic.end();
+    M5.Log.println("スピーカー：オフ（ウェイト）");
   }
 
   if (M5.Mic.isRunning()) {
@@ -82,5 +104,36 @@ void loop() {
       udp.write((uint8_t*)record_data, record_size * sizeof(int16_t));
       udp.endPacket();
     }
+  }
+
+  if (idx == 0 || idx != idx2) {
+    WiFiClient client = server.available();
+    if (client) {
+      if (M5.Mic.isRunning()) {
+        M5.Mic.end();
+        M5.Speaker.begin();
+        M5.Log.println("マイク：オフ（TCP受信）");
+        M5.Log.println("スピーカー：オン（TCP受信）");
+      }
+      while (client.connected()) {
+        int size = client.available();
+        if (size) {
+          int len = client.readBytes(buffer[idx], buffer_size);
+          idx = (idx + 1) % buffer_count;
+          // M5.Log.printf("idx: %d\n", idx);  // ★★デバッグ用★★
+          if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && idx != idx2) {
+            M5.Speaker.playRaw((const int16_t*)buffer[idx2], buffer_size >> 1, 24000);
+            idx2 = (idx2 + 1) % buffer_count;
+            // M5.Log.printf("idx2: %d\n", idx2);  // ★★デバッグ用★★
+          }
+        }
+      }
+    }
+  }
+
+  if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && idx != idx2) {
+    M5.Speaker.playRaw((const int16_t*)buffer[idx2], buffer_size >> 1, 24000);
+    idx2 = (idx2 + 1) % buffer_count;
+    // M5.Log.printf("idx2: %d\n", idx2);  // ★★デバッグ用★★
   }
 }
