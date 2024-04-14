@@ -6,25 +6,26 @@
 using namespace m5avatar;
 Avatar avatar;
 
-static constexpr const size_t record_samplerate = 16000;
-static constexpr size_t record_size = 256 * 2;
-static int16_t *record_data;
-
 const char* ssid = "elecom2g-b09b64";     // WiFi SSID
 const char* password =  "xfxuwecedyfn";   // WiFi Password
 const char *udpAddress = "192.168.2.111"; // 相手のIPアドレス
-const int udpPort = 3333;                 // 相手のポート
+const int udpPort = 50023;                // 相手(送信)のポート ★複数スタックチャンを使う場合ここを変える(50023, 50024、…)
 WiFiUDP udp;
-WiFiServer server(4444);
+WiFiServer server(50022);                 // 自分(受信)のポート
 
-const size_t buffer_count = 200;
-const size_t buffer_size = 1024;
-uint8_t buffer[buffer_count][buffer_size] = {{0}};
-int idx = 0, idx2 = 0;
+static constexpr const size_t record_samplerate = 16000;  // マイクのサンプリングレート
+static constexpr size_t record_size = 256 * 2;            // マイクのバッファサイズ
+static int16_t *record_data;                              // マイクのバッファ
 
-unsigned long action_time = millis();
-TaskHandle_t play_task_handle = NULL;
+const size_t play_buffer_count = 200;                              // スピーカーのバッファ数
+const size_t play_buffer_size = 1024;                              // スピーカーのバッファサイズ
+uint8_t play_buffer[play_buffer_count][play_buffer_size] = {{0}};  // スピーカーのバッファ
+int idx = 0, idx2 = 0;                                             // idx：書き込みインデックス, idx2：読み込みインデックス
+TaskHandle_t play_task_handle = NULL;                              // スピーカーのタスク
 
+unsigned long rotation_time = millis();  // 画面の向きチェック用
+
+// メモリの状態を出力
 void log_memory_info(const char* text) {
   // DEFAULT
   uint32_t default_total_size = heap_caps_get_total_size(MALLOC_CAP_DEFAULT) / 1024;
@@ -38,19 +39,41 @@ void log_memory_info(const char* text) {
   uint32_t spiram_total_size = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1024;
   uint32_t spiram_free_size = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;
   uint32_t spiram_largest_free_block = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024;
-
+  // ログ出力
   M5.Log.printf("%s DEFAULT: 総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, default_total_size, default_free_size, default_largest_free_block);
   M5.Log.printf("%s DMA:     総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, dma_total_size, dma_free_size, dma_largest_free_block);
   M5.Log.printf("%s SPIRAM:  総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, spiram_total_size, spiram_free_size, spiram_largest_free_block);
 }
 
+// スピーカーのタスク
 void play_task_loop(void *args) {
   for (;;) {
     if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && idx != idx2) {
-      M5.Speaker.playRaw((const int16_t*)buffer[idx2], buffer_size >> 1, 24000);
-      idx2 = (idx2 + 1) % buffer_count;
+      M5.Speaker.playRaw((const int16_t*)play_buffer[idx2], play_buffer_size >> 1, 24000);
+      idx2 = (idx2 + 1) % play_buffer_count;
   }
     vTaskDelay(1);
+  }
+}
+
+// 画面の向き
+void set_rotation() {
+  float ax, ay, az;
+  M5.Imu.getAccel(&ax, &ay, &az);
+  if (abs(az) > abs(ax) && abs(az) > abs(ay)) {
+    M5.Display.setRotation(0);
+  } else if (abs(ax) > abs(ay)) {
+    if (ax >= 0) {
+      M5.Display.setRotation(1);
+    } else {
+      M5.Display.setRotation(3);
+    }
+  } else {
+    if (ay >= 0) {
+      M5.Display.setRotation(0);
+    } else {
+      M5.Display.setRotation(2);
+    }
   }
 }
 
@@ -80,7 +103,7 @@ void setup() {
   spk_cfg.pin_ws = GPIO_NUM_6;        //WS, LRCLK, LRCK
   spk_cfg.pin_data_out = GPIO_NUM_8;  //SD, SDATA
   M5.Speaker.config(spk_cfg);
-  M5.Speaker.setVolume(255);
+  M5.Speaker.setVolume(50);
   M5.Speaker.end();
 
   // アバターの初期化
@@ -93,14 +116,15 @@ void setup() {
   avatar.setPosition(position_top, position_left);
   avatar.init();
 
-  record_data = (typeof(record_data))heap_caps_malloc(record_size * sizeof(int16_t), MALLOC_CAP_8BIT);
-  memset(record_data, 0, record_size * sizeof(int16_t));
-
   // WiFiに接続
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
   }
+
+  // マイクのバッファ
+  record_data = (typeof(record_data))heap_caps_malloc(record_size * sizeof(int16_t), MALLOC_CAP_8BIT);
+  memset(record_data, 0, record_size * sizeof(int16_t));
 
   // タスク実行
   xTaskCreateUniversal(play_task_loop, "play_task_loop", 8192, NULL, 1, &play_task_handle, APP_CPU_NUM);
@@ -115,7 +139,6 @@ void loop() {
 
   if (M5.BtnA.wasPressed()) {
     log_memory_info("ボタンA押下");
-    action_time = millis();
     if (M5.Speaker.isRunning()) {
       M5.Speaker.end();
       M5.Log.println("スピーカー：オフ（ボタンA押下）");
@@ -123,11 +146,6 @@ void loop() {
     M5.Mic.begin();
     M5.Log.println("マイク：オン（ボタンA押下）");
     idx = 0; idx2 = 0;
-  }
-
-  if (M5.Mic.isRunning() && millis() - action_time >= 10000) {
-    M5.Mic.end();
-    M5.Log.println("スピーカー：オフ（ウェイト）");
   }
 
   if (M5.Mic.isRunning()) {
@@ -149,9 +167,14 @@ void loop() {
     while (client.connected()) {
       int size = client.available();
       if (size) {
-        int len = client.readBytes(buffer[idx], buffer_size);
-        idx = (idx + 1) % buffer_count;
+        int len = client.readBytes(play_buffer[idx], play_buffer_size);
+        idx = (idx + 1) % play_buffer_count;
       }
     }
+  }
+
+  if (millis() - rotation_time >= 1000) {
+    set_rotation();
+    rotation_time = millis();
   }
 }
