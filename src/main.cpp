@@ -14,11 +14,11 @@ WiFiUDP udp;
 WiFiServer server(50022);                 // 自分(受信)のポート
 
 static constexpr const size_t record_samplerate = 16000;  // マイクのサンプリングレート
-static constexpr size_t record_size = 256 * 2;            // マイクのバッファサイズ
+static constexpr const size_t record_size = 512;          // マイクのバッファサイズ
 static int16_t *record_data;                              // マイクのバッファ
 
-const size_t play_buffer_count = 200;                              // スピーカーのバッファ数
-const size_t play_buffer_size = 1024;                              // スピーカーのバッファサイズ
+static constexpr const size_t play_buffer_count = 200;             // スピーカーのバッファ数
+static constexpr const size_t play_buffer_size = 1024;             // スピーカーのバッファサイズ
 uint8_t play_buffer[play_buffer_count][play_buffer_size] = {{0}};  // スピーカーのバッファ
 int idx = 0, idx2 = 0;                                             // idx：書き込みインデックス, idx2：読み込みインデックス
 TaskHandle_t play_task_handle = NULL;                              // スピーカーのタスク
@@ -49,9 +49,17 @@ void log_memory_info(const char* text) {
 void play_task_loop(void *args) {
   for (;;) {
     if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && idx != idx2) {
+      // 音声再生
       M5.Speaker.playRaw((const int16_t*)play_buffer[idx2], play_buffer_size >> 1, 24000);
+      // リップシンク
+      uint8_t level = abs(play_buffer[idx2][0]);
+      if(level > 255) level = 255;
+      float open = (float)level/255.0;
+      avatar.setMouthOpenRatio(open);
       idx2 = (idx2 + 1) % play_buffer_count;
-  }
+    } else if (!M5.Speaker.isPlaying() && idx == idx2) {
+      avatar.setMouthOpenRatio(0);
+    }
     vTaskDelay(1);
   }
 }
@@ -88,9 +96,8 @@ void setup() {
   mic_cfg.sample_rate = 16000;
   mic_cfg.pin_ws = 1;
   mic_cfg.pin_data_in = 2;
-  mic_cfg.noise_filter_level = 200;
+  // mic_cfg.noise_filter_level = 200;
   M5.Mic.config(mic_cfg);
-  M5.Mic.end();
 
   // スピーカーの初期化
   // HAT-SPK2 {前面：5VI, 3V3, BAT, 0(LRCLK), 25(SDATA), 26(BCLK), 5VO, G}
@@ -103,8 +110,7 @@ void setup() {
   spk_cfg.pin_ws = GPIO_NUM_6;        //WS, LRCLK, LRCK
   spk_cfg.pin_data_out = GPIO_NUM_8;  //SD, SDATA
   M5.Speaker.config(spk_cfg);
-  M5.Speaker.setVolume(50);
-  M5.Speaker.end();
+  M5.Speaker.setVolume(150);
 
   // アバターの初期化
   int8_t display_rotation = 0;
