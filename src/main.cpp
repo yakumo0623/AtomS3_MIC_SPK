@@ -20,26 +20,23 @@ static int16_t *record_data;                              // マイクのバッ�
 static constexpr const size_t play_buffer_count = 200;             // スピーカーのバッファ数
 static constexpr const size_t play_buffer_size = 1024;             // スピーカーのバッファサイズ
 uint8_t play_buffer[play_buffer_count][play_buffer_size] = {{0}};  // スピーカーのバッファ
-int idx = 0, idx2 = 0;                                             // idx：書き込みインデックス, idx2：読み込みインデックス
+int write_idx = 0, read_idx = 0;                                   // write_idx：書き込みインデックス, read_idx：読み込みインデックス
 TaskHandle_t play_task_handle = NULL;                              // スピーカーのタスク
 
 unsigned long rotation_time = millis();  // 画面の向きチェック用
 
 // メモリの状態を出力
 void log_memory_info(const char* text) {
-  // DEFAULT
   uint32_t default_total_size = heap_caps_get_total_size(MALLOC_CAP_DEFAULT) / 1024;
   uint32_t default_free_size = heap_caps_get_free_size(MALLOC_CAP_DEFAULT) / 1024;
   uint32_t default_largest_free_block = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT) / 1024;
-  // DMA
   uint32_t dma_total_size = heap_caps_get_total_size(MALLOC_CAP_DMA) / 1024;
   uint32_t dma_free_size = heap_caps_get_free_size(MALLOC_CAP_DMA) / 1024;
   uint32_t dma_largest_free_block = heap_caps_get_largest_free_block(MALLOC_CAP_DMA) / 1024;
-  // SPIRAM
   uint32_t spiram_total_size = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1024;
   uint32_t spiram_free_size = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;
   uint32_t spiram_largest_free_block = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024;
-  // ログ出力
+
   M5.Log.printf("%s DEFAULT: 総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, default_total_size, default_free_size, default_largest_free_block);
   M5.Log.printf("%s DMA:     総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, dma_total_size, dma_free_size, dma_largest_free_block);
   M5.Log.printf("%s SPIRAM:  総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, spiram_total_size, spiram_free_size, spiram_largest_free_block);
@@ -48,16 +45,16 @@ void log_memory_info(const char* text) {
 // スピーカーのタスク
 void play_task_loop(void *args) {
   for (;;) {
-    if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && idx != idx2) {
+    if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && write_idx != read_idx) {
       // 音声再生
-      M5.Speaker.playRaw((const int16_t*)play_buffer[idx2], play_buffer_size >> 1, 24000);
+      M5.Speaker.playRaw((const int16_t*)play_buffer[read_idx], play_buffer_size >> 1, 24000);
       // リップシンク
-      uint8_t level = abs(play_buffer[idx2][0]);
+      uint8_t level = abs(play_buffer[read_idx][0]);
       if(level > 255) level = 255;
       float open = (float)level/255.0;
       avatar.setMouthOpenRatio(open);
-      idx2 = (idx2 + 1) % play_buffer_count;
-    } else if (!M5.Speaker.isPlaying() && idx == idx2) {
+      read_idx = (read_idx + 1) % play_buffer_count;
+    } else if (!M5.Speaker.isPlaying() && write_idx == read_idx) {
       avatar.setMouthOpenRatio(0);
     }
     vTaskDelay(1);
@@ -113,20 +110,21 @@ void setup() {
   M5.Speaker.setVolume(150);
 
   // アバターの初期化
-  int8_t display_rotation = 0;
   float scale = 0.55f;
   int8_t position_top =  -60;
   int8_t position_left = -95;
-  M5.Display.setRotation(display_rotation);
+  M5.Display.setRotation(0);
   avatar.setScale(scale);
   avatar.setPosition(position_top, position_left);
   avatar.init();
+  avatar.setExpression(Expression::Sleepy);
 
   // WiFiに接続
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
   }
+  avatar.setExpression(Expression::Neutral);
 
   // マイクのバッファ
   record_data = (typeof(record_data))heap_caps_malloc(record_size * sizeof(int16_t), MALLOC_CAP_8BIT);
@@ -151,7 +149,7 @@ void loop() {
     }
     M5.Mic.begin();
     M5.Log.println("マイク：オン（ボタンA押下）");
-    idx = 0; idx2 = 0;
+    write_idx = 0; read_idx = 0;
   }
 
   if (M5.Mic.isRunning()) {
@@ -173,13 +171,13 @@ void loop() {
     while (client.connected()) {
       int size = client.available();
       if (size) {
-        int len = client.readBytes(play_buffer[idx], play_buffer_size);
-        idx = (idx + 1) % play_buffer_count;
+        int len = client.readBytes(play_buffer[write_idx], play_buffer_size);
+        write_idx = (write_idx + 1) % play_buffer_count;
       }
     }
   }
 
-  if (millis() - rotation_time >= 1000) {
+  if (millis() - rotation_time >= 2000) {
     set_rotation();
     rotation_time = millis();
   }
