@@ -8,7 +8,7 @@ Avatar avatar;
 
 const char* ssid = "elecom2g-b09b64";     // WiFi SSID
 const char* password =  "xfxuwecedyfn";   // WiFi Password
-const char *udpAddress = "192.168.2.111"; // 相手のIPアドレス
+const char *udpAddress = "192.168.2.107"; // 相手のIPアドレス
 const int udpPort = 50023;                // 相手(送信)のポート ★複数スタックチャンを使う場合ここを変える(50023, 50024、…)
 WiFiUDP udp;
 WiFiServer server(50022);                 // 自分(受信)のポート
@@ -93,7 +93,6 @@ void setup() {
   mic_cfg.sample_rate = 16000;
   mic_cfg.pin_ws = 1;
   mic_cfg.pin_data_in = 2;
-  // mic_cfg.noise_filter_level = 200;
   M5.Mic.config(mic_cfg);
 
   // スピーカーの初期化
@@ -107,7 +106,7 @@ void setup() {
   spk_cfg.pin_ws = GPIO_NUM_6;        //WS, LRCLK, LRCK
   spk_cfg.pin_data_out = GPIO_NUM_8;  //SD, SDATA
   M5.Speaker.config(spk_cfg);
-  M5.Speaker.setVolume(150);
+  M5.Speaker.setVolume(170);
 
   // アバターの初期化
   float scale = 0.55f;
