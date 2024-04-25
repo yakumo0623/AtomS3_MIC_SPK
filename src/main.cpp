@@ -15,7 +15,7 @@ WiFiServer server(50022);                 // 自分(受信)のポート
 
 static constexpr const uint32_t mic_samplerate = 16000;  // マイクのサンプリングレート
 static constexpr const size_t mic_buf_size = 512;        // マイクのバッファサイズ
-static int16_t *mic_buf;                                 // マイクのバッファ
+int16_t mic_buf[mic_buf_size] = {0};                     // マイクのバッファ
 
 static constexpr const uint8_t spk_volume = 150;          // スピーカーのボリューム
 static constexpr const uint32_t spk_samplerate = 24000;  // スピーカーのサンプリングレート
@@ -126,10 +126,6 @@ void setup() {
     delay(500);
   }
   avatar.setExpression(Expression::Neutral);
-
-  // マイクのバッファ
-  mic_buf = (typeof(mic_buf))heap_caps_malloc(mic_buf_size * sizeof(int16_t), MALLOC_CAP_8BIT);
-  memset(mic_buf, 0, mic_buf_size * sizeof(int16_t));
 
   // タスク実行
   xTaskCreateUniversal(play_task_loop, "play_task_loop", 8192, NULL, 1, &spk_task_handle, APP_CPU_NUM);
