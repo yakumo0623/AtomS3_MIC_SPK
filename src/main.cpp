@@ -8,20 +8,22 @@ Avatar avatar;
 
 const char* ssid = "elecom2g-b09b64";     // WiFi SSID
 const char* password =  "xfxuwecedyfn";   // WiFi Password
-const char *udpAddress = "192.168.2.107"; // 相手のIPアドレス
+const char *udpAddress = "192.168.2.109"; // 相手のIPアドレス
 const int udpPort = 50023;                // 相手(送信)のポート ★複数スタックチャンを使う場合ここを変える(50023, 50024、…)
 WiFiUDP udp;
 WiFiServer server(50022);                 // 自分(受信)のポート
 
-static constexpr const size_t record_samplerate = 16000;  // マイクのサンプリングレート
-static constexpr const size_t record_size = 512;          // マイクのバッファサイズ
-static int16_t *record_data;                              // マイクのバッファ
+static constexpr const uint32_t mic_samplerate = 16000;  // マイクのサンプリングレート
+static constexpr const size_t mic_buf_size = 512;        // マイクのバッファサイズ
+static int16_t *mic_buf;                                 // マイクのバッファ
 
-static constexpr const size_t play_buffer_count = 200;             // スピーカーのバッファ数
-static constexpr const size_t play_buffer_size = 1024;             // スピーカーのバッファサイズ
-uint8_t play_buffer[play_buffer_count][play_buffer_size] = {{0}};  // スピーカーのバッファ
-int write_idx = 0, read_idx = 0;                                   // write_idx：書き込みインデックス, read_idx：読み込みインデックス
-TaskHandle_t play_task_handle = NULL;                              // スピーカーのタスク
+static constexpr const uint8_t spk_volume = 150;          // スピーカーのボリューム
+static constexpr const uint32_t spk_samplerate = 24000;  // スピーカーのサンプリングレート
+static constexpr const size_t spk_buf_count = 200;       // スピーカーのバッファ数
+static constexpr const size_t spk_buf_size = 1024;       // スピーカーのバッファサイズ
+uint8_t spk_buf[spk_buf_count][spk_buf_size] = {{0}};    // スピーカーのバッファ
+int write_idx = 0, read_idx = 0;                         // write_idx：書き込みインデックス, read_idx：読み込みインデックス
+TaskHandle_t spk_task_handle = NULL;                     // スピーカーのタスク
 
 unsigned long rotation_time = millis();  // 画面の向きチェック用
 
@@ -47,13 +49,13 @@ void play_task_loop(void *args) {
   for (;;) {
     if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && write_idx != read_idx) {
       // 音声再生
-      M5.Speaker.playRaw((const int16_t*)play_buffer[read_idx], play_buffer_size >> 1, 24000);
+      M5.Speaker.playRaw((const int16_t*)spk_buf[read_idx], spk_buf_size >> 1, spk_samplerate);
       // リップシンク
-      uint8_t level = abs(play_buffer[read_idx][0]);
+      uint8_t level = abs(spk_buf[read_idx][0]);
       if(level > 255) level = 255;
       float open = (float)level/255.0;
       avatar.setMouthOpenRatio(open);
-      read_idx = (read_idx + 1) % play_buffer_count;
+      read_idx = (read_idx + 1) % spk_buf_count;
     } else if (!M5.Speaker.isPlaying() && write_idx == read_idx) {
       avatar.setMouthOpenRatio(0);
     }
@@ -90,7 +92,7 @@ void setup() {
 
   // マイクの初期化
   auto mic_cfg = M5.Mic.config();
-  mic_cfg.sample_rate = 16000;
+  mic_cfg.sample_rate = mic_samplerate;
   mic_cfg.pin_ws = 1;
   mic_cfg.pin_data_in = 2;
   M5.Mic.config(mic_cfg);
@@ -106,7 +108,7 @@ void setup() {
   spk_cfg.pin_ws = GPIO_NUM_6;        //WS, LRCLK, LRCK
   spk_cfg.pin_data_out = GPIO_NUM_8;  //SD, SDATA
   M5.Speaker.config(spk_cfg);
-  M5.Speaker.setVolume(170);
+  M5.Speaker.setVolume(spk_volume);
 
   // アバターの初期化
   float scale = 0.55f;
@@ -126,11 +128,11 @@ void setup() {
   avatar.setExpression(Expression::Neutral);
 
   // マイクのバッファ
-  record_data = (typeof(record_data))heap_caps_malloc(record_size * sizeof(int16_t), MALLOC_CAP_8BIT);
-  memset(record_data, 0, record_size * sizeof(int16_t));
+  mic_buf = (typeof(mic_buf))heap_caps_malloc(mic_buf_size * sizeof(int16_t), MALLOC_CAP_8BIT);
+  memset(mic_buf, 0, mic_buf_size * sizeof(int16_t));
 
   // タスク実行
-  xTaskCreateUniversal(play_task_loop, "play_task_loop", 8192, NULL, 1, &play_task_handle, APP_CPU_NUM);
+  xTaskCreateUniversal(play_task_loop, "play_task_loop", 8192, NULL, 1, &spk_task_handle, APP_CPU_NUM);
 
   // 送受信の初期化
   udp.begin(udpPort);
@@ -152,9 +154,9 @@ void loop() {
   }
 
   if (M5.Mic.isRunning()) {
-    if (M5.Mic.record(record_data, record_size, record_samplerate)) {
+    if (M5.Mic.record(mic_buf, mic_buf_size, mic_samplerate)) {
       udp.beginPacket(udpAddress, udpPort);
-      udp.write((uint8_t*)record_data, record_size * sizeof(int16_t));
+      udp.write((uint8_t*)mic_buf, mic_buf_size * sizeof(int16_t));
       udp.endPacket();
     }
   }
@@ -170,8 +172,8 @@ void loop() {
     while (client.connected()) {
       int size = client.available();
       if (size) {
-        int len = client.readBytes(play_buffer[write_idx], play_buffer_size);
-        write_idx = (write_idx + 1) % play_buffer_count;
+        int len = client.readBytes(spk_buf[write_idx], spk_buf_size);
+        write_idx = (write_idx + 1) % spk_buf_count;
       }
     }
   }
