@@ -17,13 +17,19 @@ static constexpr const uint32_t mic_samplerate = 16000;  // マイクのサン�
 static constexpr const size_t mic_buf_size = 512;        // マイクのバッファサイズ
 int16_t mic_buf[mic_buf_size] = {0};                     // マイクのバッファ
 
-static constexpr const uint8_t spk_volume = 150;          // スピーカーのボリューム
+static constexpr const uint8_t spk_volume = 50;          // スピーカーのボリューム
 static constexpr const uint32_t spk_samplerate = 24000;  // スピーカーのサンプリングレート
-static constexpr const size_t spk_buf_count = 200;       // スピーカーのバッファ数
+static constexpr const size_t spk_buf_count = 10;        // スピーカーのバッファ数
 static constexpr const size_t spk_buf_size = 1024;       // スピーカーのバッファサイズ
 uint8_t spk_buf[spk_buf_count][spk_buf_size] = {{0}};    // スピーカーのバッファ
-int write_idx = 0, read_idx = 0;                         // write_idx：書き込みインデックス, read_idx：読み込みインデックス
+size_t write_idx = 0;                                    // 書き込みインデックス
+size_t read_idx = 0;                                     // 読み込みインデックス
+size_t write_cycle = 0;                                  // 書き込み周回数
+size_t read_cycle = 0;                                   // 読み込み周回数
+
+// TaskHandle_t tcp_rcv_task_handle = NULL;              // TCP受診のタスク
 TaskHandle_t spk_task_handle = NULL;                     // スピーカーのタスク
+TaskHandle_t lipsync_task_handle = NULL;                 // リップシンクのタスク
 
 unsigned long rotation_time = millis();  // 画面の向きチェック用
 
@@ -44,22 +50,60 @@ void log_memory_info(const char* text) {
   M5.Log.printf("%s SPIRAM:  総サイズ：%4dKB 残り：%4dKB 最大ブロック残：%3dKB\n", text, spiram_total_size, spiram_free_size, spiram_largest_free_block);
 }
 
+// TCP受診のタスク
+// void tcp_rcv_task_loop(void *args) {
+//   for (;;) {
+//     WiFiClient client = server.available();
+//     if (client) {
+//       if (M5.Mic.isRunning()) {
+//         M5.Mic.end();
+//         M5.Speaker.begin();
+//         M5.Log.println("マイク：オフ＆スピーカー：オン（TCP受信）");
+//       }
+//       while (client.connected()) {
+//         int size = client.available();
+//         if (size) {
+//           memset(spk_buf[write_idx], 0, spk_buf_size);
+//           int len = client.readBytes(spk_buf[write_idx], spk_buf_size);
+//           write_idx = (write_idx + 1) % spk_buf_count;
+//           if (write_idx  == 0) { write_cycle += 1; }
+//           if (write_cycle != 0) {
+//             while ((write_cycle * spk_buf_count + write_idx) - (read_cycle * spk_buf_count + read_idx) > (spk_buf_count / 2)) {
+//               vTaskDelay(10);
+//             }
+//           }
+//           client.write("OK");
+//         }
+//       }
+//     }
+//     vTaskDelay(1);
+//   }
+// }
+
 // スピーカーのタスク
-void play_task_loop(void *args) {
+void spk_task_loop(void *args) {
   for (;;) {
-    if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && write_idx != read_idx) {
-      // 音声再生
+    if (M5.Speaker.isRunning() && !M5.Speaker.isPlaying() && write_idx != read_idx) {  // 書き込みと読み込みが一致するのは、最初と演奏終了の時
       M5.Speaker.playRaw((const int16_t*)spk_buf[read_idx], spk_buf_size >> 1, spk_samplerate);
-      // リップシンク
+      read_idx = (read_idx + 1) % spk_buf_count;
+      if (read_idx  == 0) { read_cycle += 1; }
+    }
+    vTaskDelay(1);
+  }
+}
+
+// リップシンクのタスク
+void lipsync_task_loop(void *args) {
+  for (;;) {
+    if (M5.Speaker.isRunning() && M5.Speaker.isPlaying()) {
       uint8_t level = abs(spk_buf[read_idx][0]);
       if(level > 255) level = 255;
       float open = (float)level/255.0;
       avatar.setMouthOpenRatio(open);
-      read_idx = (read_idx + 1) % spk_buf_count;
-    } else if (!M5.Speaker.isPlaying() && write_idx == read_idx) {
+    } else {
       avatar.setMouthOpenRatio(0);
     }
-    vTaskDelay(1);
+    vTaskDelay(10);
   }
 }
 
@@ -128,7 +172,9 @@ void setup() {
   avatar.setExpression(Expression::Neutral);
 
   // タスク実行
-  xTaskCreateUniversal(play_task_loop, "play_task_loop", 8192, NULL, 1, &spk_task_handle, APP_CPU_NUM);
+  // xTaskCreateUniversal(tcp_rcv_task_loop, "tcp_rcv_task_loop", 8192, NULL, 1, &tcp_rcv_task_handle, APP_CPU_NUM);
+  xTaskCreateUniversal(spk_task_loop, "spk_task_loop", 8192, NULL, 1, &spk_task_handle, APP_CPU_NUM);
+  xTaskCreateUniversal(lipsync_task_loop, "lipsync_task_loop", 8192, NULL, 1, &lipsync_task_handle, APP_CPU_NUM);
 
   // 送受信の初期化
   udp.begin(udpPort);
@@ -146,7 +192,10 @@ void loop() {
     }
     M5.Mic.begin();
     M5.Log.println("マイク：オン（ボタンA押下）");
-    write_idx = 0; read_idx = 0;
+    write_idx = 0;
+    read_idx = 0;
+    write_cycle = 0;
+    read_cycle = 0;
   }
 
   if (M5.Mic.isRunning()) {
@@ -162,14 +211,21 @@ void loop() {
     if (M5.Mic.isRunning()) {
       M5.Mic.end();
       M5.Speaker.begin();
-      M5.Log.println("マイク：オフ（TCP受信）");
-      M5.Log.println("スピーカー：オン（TCP受信）");
+      M5.Log.println("マイク：オフ＆スピーカー：オン（TCP受信）");
     }
     while (client.connected()) {
       int size = client.available();
       if (size) {
+        memset(spk_buf[write_idx], 0, spk_buf_size);
         int len = client.readBytes(spk_buf[write_idx], spk_buf_size);
         write_idx = (write_idx + 1) % spk_buf_count;
+        if (write_idx  == 0) { write_cycle += 1; }
+        if (write_cycle != 0) {
+          while ((write_cycle * spk_buf_count + write_idx) - (read_cycle * spk_buf_count + read_idx) > (spk_buf_count / 2)) {
+            vTaskDelay(10);
+          }
+        }
+        client.write("OK");
       }
     }
   }
@@ -178,4 +234,6 @@ void loop() {
     set_rotation();
     rotation_time = millis();
   }
+
+  delay(1);
 }
