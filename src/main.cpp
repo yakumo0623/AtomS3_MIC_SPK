@@ -6,9 +6,9 @@
 using namespace m5avatar;
 Avatar avatar;
 
-const char* ssid = "elecom2g-b09b64";     // WiFi SSID
-const char* password =  "xfxuwecedyfn";   // WiFi Password
-const char *udpAddress = "192.168.2.109"; // 相手のIPアドレス
+const char* ssid = "";     // WiFi SSID
+const char* password =  "";   // WiFi Password
+const char *udpAddress = ""; // 相手のIPアドレス
 const int udpPort = 50023;                // 相手(送信)のポート ★複数スタックチャンを使う場合ここを変える(50023, 50024、…)
 WiFiUDP udp;
 WiFiServer server(50022);                 // 自分(受信)のポート
